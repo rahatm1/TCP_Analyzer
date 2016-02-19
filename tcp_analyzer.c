@@ -13,6 +13,8 @@
 
 #include <pcap.h>
 
+#define BUFFER_SIZE 80
+
 /* Some helper functions, which we define at the end of this file. */
 
 /* Returns a string representation of a timestamp. */
@@ -98,11 +100,17 @@ void process_TCP_packet(const unsigned char *packet, struct timeval ts,
 
 	//TODO: calculate payload size here
 
+	char *src_addr = malloc(BUFFER_SIZE);
+	strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+
+	char *dst_addr = malloc(BUFFER_SIZE);
+	strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+
 	printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
 		timestamp_string(ts),
-		inet_ntoa(ip->ip_src),
+		src_addr,
 		ntohs(tcp->th_sport),
-		inet_ntoa(ip->ip_dst),
+		dst_addr,
 		ntohs(tcp->th_dport)
 	);
 }
@@ -111,6 +119,8 @@ void process_TCP_packet(const unsigned char *packet, struct timeval ts,
 int main(int argc, char *argv[])
 {
 	pcap_t *pcap;
+	struct bpf_program fp;		/* The compiled filter expression */
+	char filter_exp[] = "tcp";	/* The filter expression */
 	const unsigned char *packet;
 	char errbuf[PCAP_ERRBUF_SIZE];
 	struct pcap_pkthdr header;
@@ -130,6 +140,16 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "error reading pcap file: %s\n", errbuf);
 		exit(1);
+	}
+
+	if(pcap_compile(pcap, &fp, filter_exp, 0, 0) == -1) {
+		fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(pcap));
+		return(2);
+	}
+
+	if (pcap_setfilter(pcap, &fp) == -1) {
+		fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(pcap));
+		return(2);
 	}
 
 	/* Now just loop through extracting packets as long as we have
