@@ -1,5 +1,5 @@
 #makefile for project 2 works both in linux and unix system now
-CFLAGS = -Wall -Wextra -pedantic -std=c11 -g
+CFLAGS = -Wall -Wextra -pedantic -std=gnu11 -g
 LDFLAGS = -lpcap
 CC = gcc
 
