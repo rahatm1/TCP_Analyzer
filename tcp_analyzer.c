@@ -12,19 +12,33 @@
 #include <arpa/inet.h>
 
 #include <pcap.h>
+#include "util.h"
 
 #define BUFFER_SIZE 80
 
-/* Some helper functions, which we define at the end of this file. */
+typedef struct _connection {
+	char ip_src[BUFFER_SIZE]; /* source IP */
+	char ip_dst[BUFFER_SIZE]; /* destination IP */
+	uint16_t port_src; /* source port number */
+	uint16_t port_dst; /* destination port number */
+	int syn_count; /* flag count */
+	int fin_count;
+	int rst_count;
+	struct timeval starting_time;
+	struct timeval ending_time;
+	double duration;
+	int num_packet_src; /* number of packets sent out by source */
+	int num_packet_dst; /* number of packets sent out by destination */
+	int num_total_packets;
+	int cur_data_len_src; /* number of data bytes by source */
+	int cur_data_len_dst; /* number of data bytes by destination */
+	int cur_total_data_len;
+} connection;
 
-/* Returns a string representation of a timestamp. */
-const char *timestamp_string(struct timeval ts);
+int totalConnection = 0;
 
-/* Report a problem with dumping the packet with the given timestamp. */
-void problem_pkt(struct timeval ts, const char *reason);
-
-/* Report the specific problem of a packet being too short. */
-void too_short(struct timeval ts, const char *truncated_hdr);
+pcap_t* open_pcap(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp);
+int uniqueConnection(connection *conn, connection **connArray);
 
 /* process_TCP_packet()
  *
@@ -41,7 +55,7 @@ void too_short(struct timeval ts, const char *truncated_hdr);
  * packet.  However, the packet pointer only holds that much data, so
  * we have to be careful not to read beyond it.
  */
-void process_TCP_packet(const unsigned char *packet, struct timeval ts,
+void create_connection(connection **connArray, const unsigned char *packet, struct timeval ts,
 			unsigned int capture_len)
 {
 	struct ip *ip;
@@ -100,19 +114,45 @@ void process_TCP_packet(const unsigned char *packet, struct timeval ts,
 
 	//TODO: calculate payload size here
 
-	char *src_addr = malloc(BUFFER_SIZE);
-	strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+	// char *src_addr = malloc(BUFFER_SIZE);
+	// strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+    //
+	// char *dst_addr = malloc(BUFFER_SIZE);
+	// strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+    //
+	// printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
+	// 	timestamp_string(ts),
+	// 	src_addr,
+	// 	ntohs(tcp->th_sport),
+	// 	dst_addr,
+	// 	ntohs(tcp->th_dport)
+	// );
 
-	char *dst_addr = malloc(BUFFER_SIZE);
-	strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+    connection *temp = malloc(sizeof(connection));
+    strncpy(temp->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+    strncpy(temp->ip_dst, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+    temp->port_src = ntohs(tcp->th_sport);
+    temp->port_dst = ntohs(tcp->th_dport);
 
-	printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
-		timestamp_string(ts),
-		src_addr,
-		ntohs(tcp->th_sport),
-		dst_addr,
-		ntohs(tcp->th_dport)
-	);
+    if (uniqueConnection(temp, connArray) == 0) {
+        connArray[totalConnection] = temp;
+        totalConnection++;
+    }
+}
+
+int uniqueConnection(connection *conn, connection **connArray)
+{
+    for (int i = 0; i < totalConnection; i++) {
+        if ((strcmp(conn->ip_src, connArray[i]->ip_src) == 0) &&
+            (strcmp(conn->ip_dst, connArray[i]->ip_dst) == 0) &&
+            conn->port_src == connArray[i]->port_src &&
+            conn->port_dst == connArray[i]->port_dst)
+        {
+            return -1;
+        }
+
+    }
+    return 0;
 }
 
 
@@ -120,8 +160,9 @@ int main(int argc, char *argv[])
 {
 	pcap_t *pcap;
 	struct bpf_program fp;		/* The compiled filter expression */
-	char filter_exp[] = "tcp";	/* The filter expression */
-	const unsigned char *packet;
+	char filter_exp[] = "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0";	/* The filter expression */
+    // char filter_exp[] = "tcp";
+    const unsigned char *packet;
 	char errbuf[PCAP_ERRBUF_SIZE];
 	struct pcap_pkthdr header;
 
@@ -135,54 +176,48 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	pcap = pcap_open_offline(argv[0], errbuf);
-	if (pcap == NULL)
-	{
-		fprintf(stderr, "error reading pcap file: %s\n", errbuf);
-		exit(1);
-	}
+    pcap = open_pcap(argv[0], errbuf, &fp, filter_exp);
 
-	if(pcap_compile(pcap, &fp, filter_exp, 0, 0) == -1) {
-		fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(pcap));
-		return(2);
-	}
+    int connNum = 0;
+    while ((pcap_next(pcap, &header)) != NULL) {
+        connNum++;
+    }
+    connection **connArray = (connection **) malloc(connNum * sizeof(connection *));
 
-	if (pcap_setfilter(pcap, &fp) == -1) {
-		fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(pcap));
-		return(2);
-	}
+    pcap = open_pcap(argv[0], errbuf, &fp, filter_exp);
 
 	/* Now just loop through extracting packets as long as we have
 	 * some to read.
 	 */
 	while ((packet = pcap_next(pcap, &header)) != NULL)
-		process_TCP_packet(packet, header.ts, header.caplen);
+    {
+		create_connection(connArray, packet, header.ts, header.caplen);
+    }
 
+    printf("%d\n", totalConnection);
 	// terminate
 	return 0;
 }
 
-
-/* Note, this routine returns a pointer into a static buffer, and
- * so each call overwrites the value returned by the previous call.
- */
-const char *timestamp_string(struct timeval ts)
+pcap_t* open_pcap(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp)
 {
-	static char timestamp_string_buf[256];
+    pcap_t *pcap;
 
-	sprintf(timestamp_string_buf, "%d.%06d",
-		(int) ts.tv_sec, (int) ts.tv_usec);
+    pcap = pcap_open_offline(fileName, errbuf);
+    if (pcap == NULL)
+    {
+        fprintf(stderr, "error reading pcap file: %s\n", errbuf);
+        exit(1);
+    }
 
-	return timestamp_string_buf;
-}
+    if(pcap_compile(pcap, fp, filter_exp, 0, 0) == -1) {
+        fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(pcap));
+        exit(2);
+    }
 
-void problem_pkt(struct timeval ts, const char *reason)
-{
-	fprintf(stderr, "%s: %s\n", timestamp_string(ts), reason);
-}
-
-void too_short(struct timeval ts, const char *truncated_hdr)
-{
-	fprintf(stderr, "packet with timestamp %s is truncated and lacks a full %s\n",
-		timestamp_string(ts), truncated_hdr);
+    if (pcap_setfilter(pcap, fp) == -1) {
+        fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(pcap));
+        exit(2);
+    }
+    return pcap;
 }

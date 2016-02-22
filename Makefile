@@ -5,8 +5,11 @@ CC = gcc
 
 all: tcp_analyzer
 
-tcp_analyzer: tcp_analyzer.o
-	$(CC) $(CFLAGS) -o tcp_analyzer tcp_analyzer.o $(LDFLAGS)
+tcp_analyzer: util.o tcp_analyzer.o
+	$(CC) $(CFLAGS) -o tcp_analyzer tcp_analyzer.o util.o $(LDFLAGS)
+
+util.o: util.c
+	$(CC) $(CFLAGS) -c util.c
 
 clean:
 	-rm -rf *.o tcp_analyzer.dSYM tcp_analyzer
