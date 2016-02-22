@@ -37,7 +37,7 @@ typedef struct _connection {
 
 int totalConnection = 0;
 
-pcap_t* open_pcap(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp);
+pcap_t* build_filter(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp);
 int uniqueConnection(connection *conn, connection **connArray);
 
 /* process_TCP_packet()
@@ -55,7 +55,7 @@ int uniqueConnection(connection *conn, connection **connArray);
  * packet.  However, the packet pointer only holds that much data, so
  * we have to be careful not to read beyond it.
  */
-void create_connection(connection **connArray, const unsigned char *packet, struct timeval ts,
+connection * process_TCP(const unsigned char *packet, struct timeval ts,
 			unsigned int capture_len)
 {
 	struct ip *ip;
@@ -70,7 +70,7 @@ void create_connection(connection **connArray, const unsigned char *packet, stru
 		 * can't analyze this any further.
 		 */
 		too_short(ts, "Ethernet header");
-		return;
+		return NULL;
 	}
 
 	/* Skip over the Ethernet header. */
@@ -81,7 +81,7 @@ void create_connection(connection **connArray, const unsigned char *packet, stru
 	{
 		/* Didn't capture a full IP header */
 		too_short(ts, "IP header");
-		return;
+		return NULL;
 	}
 
 	ip = (struct ip*) packet;
@@ -91,13 +91,13 @@ void create_connection(connection **connArray, const unsigned char *packet, stru
 	{
 		/* didn't capture the full IP header including options */
 		too_short(ts, "IP header with options");
-		return;
+		return NULL;
 	}
 
 	if (ip->ip_p != IPPROTO_TCP)
 	{
 		problem_pkt(ts, "non-TCP packet");
-		return;
+		return NULL;
 	}
 
 	/* Skip over the IP header to get to the TCP header. */
@@ -107,42 +107,40 @@ void create_connection(connection **connArray, const unsigned char *packet, stru
 	if (capture_len < sizeof(struct tcphdr))
 	{
 		too_short(ts, "TCP header");
-		return;
+		return NULL;
 	}
 
 	tcp = (struct tcphdr*) packet;
 
 	//TODO: calculate payload size here
 
-	// char *src_addr = malloc(BUFFER_SIZE);
-	// strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
-    //
-	// char *dst_addr = malloc(BUFFER_SIZE);
-	// strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
-    //
-	// printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
-	// 	timestamp_string(ts),
-	// 	src_addr,
-	// 	ntohs(tcp->th_sport),
-	// 	dst_addr,
-	// 	ntohs(tcp->th_dport)
-	// );
+	char *src_addr = malloc(BUFFER_SIZE);
+	strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
 
-    connection *temp = malloc(sizeof(connection));
-    strncpy(temp->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
-    strncpy(temp->ip_dst, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
-    temp->port_src = ntohs(tcp->th_sport);
-    temp->port_dst = ntohs(tcp->th_dport);
+	char *dst_addr = malloc(BUFFER_SIZE);
+	strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
 
-    if (uniqueConnection(temp, connArray) == 0) {
-        connArray[totalConnection] = temp;
-        totalConnection++;
-    }
+	printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
+		timestamp_string(ts),
+		src_addr,
+		ntohs(tcp->th_sport),
+		dst_addr,
+		ntohs(tcp->th_dport)
+	);
+
+    connection *conn = malloc(sizeof(connection));
+    memset(conn, 0, sizeof(connection));
+    strncpy(conn->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+    strncpy(conn->ip_dst, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+    conn->port_src = ntohs(tcp->th_sport);
+    conn->port_dst = ntohs(tcp->th_dport);
+    return conn;
 }
 
 int uniqueConnection(connection *conn, connection **connArray)
 {
-    for (int i = 0; i < totalConnection; i++) {
+    for (int i = 0; i < totalConnection; i++)
+    {
         if ((strcmp(conn->ip_src, connArray[i]->ip_src) == 0) &&
             (strcmp(conn->ip_dst, connArray[i]->ip_dst) == 0) &&
             conn->port_src == connArray[i]->port_src &&
@@ -160,7 +158,7 @@ int main(int argc, char *argv[])
 {
 	pcap_t *pcap;
 	struct bpf_program fp;		/* The compiled filter expression */
-	char filter_exp[] = "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0";	/* The filter expression */
+	char filter_exp[BUFFER_SIZE] = "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0";	/* The filter expression */
     // char filter_exp[] = "tcp";
     const unsigned char *packet;
 	char errbuf[PCAP_ERRBUF_SIZE];
@@ -176,30 +174,47 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-    pcap = open_pcap(argv[0], errbuf, &fp, filter_exp);
+    pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
     int connNum = 0;
-    while ((pcap_next(pcap, &header)) != NULL) {
+    while ((pcap_next(pcap, &header)) != NULL)
+    {
         connNum++;
     }
     connection **connArray = (connection **) malloc(connNum * sizeof(connection *));
 
-    pcap = open_pcap(argv[0], errbuf, &fp, filter_exp);
+    pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
-	/* Now just loop through extracting packets as long as we have
-	 * some to read.
-	 */
+    //Create Connection
 	while ((packet = pcap_next(pcap, &header)) != NULL)
     {
-		create_connection(connArray, packet, header.ts, header.caplen);
+		connection *temp = process_TCP(packet, header.ts, header.caplen);
+
+        if (uniqueConnection(temp, connArray) == 0)
+        {
+            connArray[totalConnection] = temp;
+            totalConnection++;
+        }
     }
 
-    printf("%d\n", totalConnection);
+    printf("A) Total number of connections: %d\n", totalConnection);
+
+    for (int i = 0; i < totalConnection; i++) {
+        char filter_template[] = "ip host %s and ip host %s and port %d and port %d";
+        sprintf(filter_exp, filter_template, connArray[i]->ip_src, connArray[i]->ip_dst, connArray[i]->port_src, connArray[i]->port_dst);
+
+        pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
+        while ((packet = pcap_next(pcap, &header)) != NULL)
+        {
+            process_TCP(packet, header.ts, header.caplen);
+        }
+    }
+
 	// terminate
 	return 0;
 }
 
-pcap_t* open_pcap(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp)
+pcap_t* build_filter(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp)
 {
     pcap_t *pcap;
 
