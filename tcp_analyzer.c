@@ -10,7 +10,7 @@
 #include <netinet/if_ether.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
-
+#include <sys/time.h>
 #include <pcap.h>
 #include "util.h"
 
@@ -26,7 +26,7 @@ typedef struct _connection {
 	int rst_count;
 	struct timeval starting_time;
 	struct timeval ending_time;
-	double duration;
+	struct timeval duration;
 	int num_packet_src; /* number of packets sent out by source */
 	int num_packet_dst; /* number of packets sent out by destination */
 	int num_total_packets;
@@ -55,11 +55,9 @@ int uniqueConnection(connection *conn, connection **connArray);
  * packet.  However, the packet pointer only holds that much data, so
  * we have to be careful not to read beyond it.
  */
-connection * process_TCP(const unsigned char *packet, struct timeval ts,
-			unsigned int capture_len)
+void process_TCP(const unsigned char *packet, struct timeval ts,
+			unsigned int capture_len, struct ip **ip, struct tcphdr **tcp, int *payload_size)
 {
-	struct ip *ip;
-	struct tcphdr *tcp;
 	unsigned int IP_header_length;
 
 	/* For simplicity, we assume Ethernet encapsulation. */
@@ -70,7 +68,7 @@ connection * process_TCP(const unsigned char *packet, struct timeval ts,
 		 * can't analyze this any further.
 		 */
 		too_short(ts, "Ethernet header");
-		return NULL;
+		return;
 	}
 
 	/* Skip over the Ethernet header. */
@@ -81,23 +79,23 @@ connection * process_TCP(const unsigned char *packet, struct timeval ts,
 	{
 		/* Didn't capture a full IP header */
 		too_short(ts, "IP header");
-		return NULL;
+		return;
 	}
 
-	ip = (struct ip*) packet;
-	IP_header_length = ip->ip_hl * 4;	/* ip_hl is in 4-byte words */
+	*ip = (struct ip*) packet;
+	IP_header_length = (**ip).ip_hl * 4;	/* ip_hl is in 4-byte words */
 
 	if (capture_len < IP_header_length)
 	{
 		/* didn't capture the full IP header including options */
 		too_short(ts, "IP header with options");
-		return NULL;
+		return;
 	}
 
-	if (ip->ip_p != IPPROTO_TCP)
+	if ((**ip).ip_p != IPPROTO_TCP)
 	{
 		problem_pkt(ts, "non-TCP packet");
-		return NULL;
+		return;
 	}
 
 	/* Skip over the IP header to get to the TCP header. */
@@ -107,34 +105,27 @@ connection * process_TCP(const unsigned char *packet, struct timeval ts,
 	if (capture_len < sizeof(struct tcphdr))
 	{
 		too_short(ts, "TCP header");
-		return NULL;
+		return;
 	}
 
-	tcp = (struct tcphdr*) packet;
+	*tcp = (struct tcphdr*) packet;
 
-	//TODO: calculate payload size here
+    capture_len -= (**tcp).th_off * 4;
+    *payload_size = capture_len;
 
-	char *src_addr = malloc(BUFFER_SIZE);
-	strncpy(src_addr, inet_ntoa(ip->ip_src), BUFFER_SIZE);
-
-	char *dst_addr = malloc(BUFFER_SIZE);
-	strncpy(dst_addr, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
-
-	printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
-		timestamp_string(ts),
-		src_addr,
-		ntohs(tcp->th_sport),
-		dst_addr,
-		ntohs(tcp->th_dport)
-	);
-
-    connection *conn = malloc(sizeof(connection));
-    memset(conn, 0, sizeof(connection));
-    strncpy(conn->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
-    strncpy(conn->ip_dst, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
-    conn->port_src = ntohs(tcp->th_sport);
-    conn->port_dst = ntohs(tcp->th_dport);
-    return conn;
+	// char *src_addr = malloc(BUFFER_SIZE);
+	// strncpy(src_addr, inet_ntoa((**ip).ip_src), BUFFER_SIZE);
+    //
+	// char *dst_addr = malloc(BUFFER_SIZE);
+	// strncpy(dst_addr, inet_ntoa((**ip).ip_dst), BUFFER_SIZE);
+    //
+	// printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
+	// 	timestamp_string(ts),
+	// 	src_addr,
+	// 	ntohs((**tcp).th_sport),
+	// 	dst_addr,
+	// 	ntohs((**tcp).th_dport)
+	// );
 }
 
 int uniqueConnection(connection *conn, connection **connArray)
@@ -186,13 +177,23 @@ int main(int argc, char *argv[])
     pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
     //Create Connection
+    struct ip *ip;
+    struct tcphdr *tcp;
+    int payload_size;
 	while ((packet = pcap_next(pcap, &header)) != NULL)
     {
-		connection *temp = process_TCP(packet, header.ts, header.caplen);
+		process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
 
-        if (uniqueConnection(temp, connArray) == 0)
+        connection *conn = malloc(sizeof(connection));
+        memset(conn, 0, sizeof(connection));
+        strncpy(conn->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
+        strncpy(conn->ip_dst, inet_ntoa(ip->ip_dst), BUFFER_SIZE);
+        conn->port_src = ntohs(tcp->th_sport);
+        conn->port_dst = ntohs(tcp->th_dport);
+
+        if (uniqueConnection(conn, connArray) == 0)
         {
-            connArray[totalConnection] = temp;
+            connArray[totalConnection] = conn;
             totalConnection++;
         }
     }
@@ -200,13 +201,74 @@ int main(int argc, char *argv[])
     printf("A) Total number of connections: %d\n", totalConnection);
 
     for (int i = 0; i < totalConnection; i++) {
+        connection *temp = connArray[i];
         char filter_template[] = "ip host %s and ip host %s and port %d and port %d";
-        sprintf(filter_exp, filter_template, connArray[i]->ip_src, connArray[i]->ip_dst, connArray[i]->port_src, connArray[i]->port_dst);
+        sprintf(filter_exp, filter_template, temp->ip_src, temp->ip_dst, temp->port_src, temp->port_dst);
 
         pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
+
         while ((packet = pcap_next(pcap, &header)) != NULL)
         {
-            process_TCP(packet, header.ts, header.caplen);
+            process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
+
+            if (timerisset(&temp->starting_time) == 0) {
+                temp->starting_time = header.ts;
+            }
+
+            switch(tcp->th_flags) {
+                case TH_SYN:
+                    temp->syn_count++;
+                case TH_FIN:
+                    temp->fin_count++;
+                case TH_RST:
+                    temp->rst_count++;
+            }
+
+            if ((temp->syn_count >= 1) &&
+                (temp->fin_count >= 1))
+            {
+                temp->ending_time = header.ts;
+            }
+
+            if (strcmp(temp->ip_src, inet_ntoa(ip->ip_src)) == 0)
+            {
+                temp->num_packet_src++;
+                temp->cur_data_len_src += payload_size;
+            }
+            else if (strcmp(temp->ip_dst, inet_ntoa(ip->ip_src)) == 0)
+            {
+                temp->num_packet_dst++;
+                temp->cur_data_len_dst += payload_size;
+            }
+        }
+
+        printf("Connection: %d\n", i);
+        printf("Source Address: %s\n", temp->ip_src);
+        printf("Destination Address: %s\n", temp->ip_dst);
+        printf("Source Port: %d\n", temp->port_src);
+        printf("Destination Port: %d\n", temp->port_dst);
+
+        if ((temp->syn_count >= 1) &&
+            (temp->fin_count >= 1))
+        {
+            timersub(&temp->ending_time, &temp->starting_time, &temp->duration);
+            temp->num_total_packets = temp->num_packet_src + temp->num_packet_dst;
+            temp->cur_total_data_len = temp->cur_data_len_src + temp->cur_data_len_dst;
+
+            printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
+            printf("Start Time: %s\n", timestamp_string(temp->starting_time));
+            printf("End Time: %s\n", timestamp_string(temp->ending_time));
+            printf("Duration: %s\n", timestamp_string(temp->duration));
+            printf("Number of packets sent from Source to Destination: %d\n", temp->num_packet_src);
+            printf("Number of packets sent from Destination to Source: %d\n", temp->num_packet_dst);
+            printf("Total Number of packets: %d\n", temp->num_total_packets);
+            printf("Number of data bytes sent from Source to Destination: %d\n", temp->cur_data_len_src);
+            printf("Number of data bytes sent from Destination to Source: %d\n", temp->cur_data_len_dst);
+            printf("Total Number of data bytes: %d\n", temp->cur_total_data_len);
+            printf("END\n");
+            printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+            printf("\n");
+
         }
     }
 
