@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <pcap.h>
+#include <limits.h>
 #include "util.h"
 
 #define BUFFER_SIZE 80
@@ -26,13 +27,16 @@ typedef struct _connection {
 	int rst_count;
 	struct timeval starting_time;
 	struct timeval ending_time;
-	struct timeval duration;
+	double duration;
 	int num_packet_src; /* number of packets sent out by source */
 	int num_packet_dst; /* number of packets sent out by destination */
 	int num_total_packets;
 	int cur_data_len_src; /* number of data bytes by source */
 	int cur_data_len_dst; /* number of data bytes by destination */
 	int cur_total_data_len;
+    uint16_t max_win_size;  /*max window size*/
+    uint16_t min_win_size;  /*min window size*/
+    int sum_win_size;
 } connection;
 
 int totalConnection = 0;
@@ -203,6 +207,21 @@ int main(int argc, char *argv[])
 
     printf("B) Connection Details:\n\n");
 
+    int completeConnection = 0;
+    int totalReset = 0;
+    int openConnection = 0;
+
+    int minPacket = INT_MAX;
+    int maxPacket = 0;
+    int totalPacket = 0;
+
+    double minDuration = LONG_MAX;
+    double maxDuration = 0;
+    double totalDuration = 0;
+
+    uint16_t minWindow = USHRT_MAX;
+    uint16_t maxWindow = 0;
+    int totalWindow = 0;
 
     for (int i = 0; i < totalConnection; i++) {
         connection *temp = connArray[i];
@@ -211,6 +230,8 @@ int main(int argc, char *argv[])
 
         pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
+        temp->max_win_size = 0;
+        temp->min_win_size = USHRT_MAX;
         while ((packet = pcap_next(pcap, &header)) != NULL)
         {
             payload_size = 0;
@@ -222,12 +243,9 @@ int main(int argc, char *argv[])
 
             if(tcp->th_flags & TH_SYN) temp->syn_count++;
             if(tcp->th_flags & TH_FIN) temp->fin_count++;
-            if(tcp->th_flags & TH_RST) temp->rst_count++;
-
-            if ((temp->syn_count >= 1) &&
-                (temp->fin_count >= 1))
-            {
-                temp->ending_time = header.ts;
+            if(tcp->th_flags & TH_RST) {
+                temp->rst_count++;
+                totalReset++;
             }
 
             if (strcmp(temp->ip_src, inet_ntoa(ip->ip_src)) == 0)
@@ -241,6 +259,16 @@ int main(int argc, char *argv[])
                 temp->cur_data_len_dst += payload_size;
             }
 
+            if (tcp->th_win > temp->max_win_size)
+            {
+                temp->max_win_size = tcp->th_win;
+            }
+            if (tcp->th_win < temp->min_win_size)
+            {
+                temp->min_win_size = tcp->th_win;
+            }
+            temp->sum_win_size += tcp->th_win;
+
         }
 
         printf("Connection: %d\n", i+1);
@@ -253,24 +281,84 @@ int main(int argc, char *argv[])
         if ((temp->syn_count >= 1) &&
             (temp->fin_count >= 1))
         {
-            timersub(&temp->ending_time, &temp->starting_time, &temp->duration);
+            completeConnection++;
+
+            temp->ending_time = header.ts;
+            temp->duration = getDuration(&temp->starting_time, &temp->ending_time);
             temp->num_total_packets = temp->num_packet_src + temp->num_packet_dst;
             temp->cur_total_data_len = temp->cur_data_len_src + temp->cur_data_len_dst;
 
+            if (temp->duration < minDuration)
+            {
+                minDuration = temp->duration;
+            }
+            if (temp->duration > maxDuration)
+            {
+                maxDuration = temp->duration;
+            }
+            totalDuration += temp->duration;
+
+            if (temp->num_total_packets < minPacket)
+            {
+                minPacket = temp->num_total_packets;
+            }
+            if (temp->num_total_packets > maxPacket)
+            {
+                maxPacket = temp->num_total_packets;
+            }
+            totalPacket += temp->num_total_packets;
+
+            if (temp->min_win_size < minWindow)
+            {
+                minWindow = temp->min_win_size;
+            }
+            if (temp->max_win_size > maxWindow)
+            {
+                maxWindow = temp->max_win_size;
+            }
+            totalWindow += temp->sum_win_size/temp->num_total_packets;
+
             printf("Start Time: %s\n", timestamp_string(temp->starting_time));
             printf("End Time: %s\n", timestamp_string(temp->ending_time));
-            printf("Duration: %s\n", timestamp_string(temp->duration));
+            printf("Duration: %f\n", temp->duration);
             printf("Number of packets sent from Source to Destination: %d\n", temp->num_packet_src);
             printf("Number of packets sent from Destination to Source: %d\n", temp->num_packet_dst);
             printf("Total Number of packets: %d\n", temp->num_total_packets);
             printf("Number of data bytes sent from Source to Destination: %d\n", temp->cur_data_len_src);
             printf("Number of data bytes sent from Destination to Source: %d\n", temp->cur_data_len_dst);
             printf("Total Number of data bytes: %d\n", temp->cur_total_data_len);
+
         }
+
+        if (temp->fin_count == 0)
+        {
+            openConnection++;
+        }
+
         printf("END\n");
         printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
         printf("\n");
     }
+
+    printf("C) General\n");
+    printf("\n");
+    printf("Total number of complete TCP connections: %d\n", completeConnection);
+    printf("Number of reset TCP connections: %d\n", totalReset);
+    printf("Number of TCP connections that were still open when the trace capture ended: %d\n", openConnection);
+    printf("\n");
+    printf("D) Complete TCP connections: \n");
+    printf("\n");
+    printf("Minimum time durations: %f\n", minDuration);
+    printf("Mean time durations: %f\n", (double) totalDuration/completeConnection);
+    printf("Maximum time durations: %f\n", maxDuration);
+    printf("\n");
+    printf("Minimum number of packets including both send/received: %d\n", minPacket);
+    printf("Mean number of packets including both send/received: %d\n", totalPacket/completeConnection);
+    printf("Maximum number of packets including both send/received: %d\n", maxPacket);
+    printf("\n");
+    printf("Minimum receive window sizes including both send/received: %d\n", minWindow);
+    printf("Mean receive window sizes including both send/received: %d\n", totalWindow/completeConnection);
+    printf("Maximum receive window sizes including both send/received: %d\n", maxWindow);
 
 	// terminate
 	return 0;

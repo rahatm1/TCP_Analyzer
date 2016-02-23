@@ -32,3 +32,11 @@ void too_short(struct timeval ts, const char *truncated_hdr)
 	fprintf(stderr, "packet with timestamp %s is truncated and lacks a full %s\n",
 		timestamp_string(ts), truncated_hdr);
 }
+
+double getDuration(struct timeval *starttime, struct timeval *endtime)
+{
+  double sec = 0;
+  sec = (endtime->tv_sec-starttime->tv_sec);
+  sec += (endtime->tv_usec-starttime->tv_usec)/1000000.0;
+  return sec;
+}
