@@ -182,6 +182,7 @@ int main(int argc, char *argv[])
     int payload_size;
 	while ((packet = pcap_next(pcap, &header)) != NULL)
     {
+        payload_size = 0;
 		process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
 
         connection *conn = malloc(sizeof(connection));
@@ -198,7 +199,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    printf("A) Total number of connections: %d\n", totalConnection);
+    printf("A) Total number of connections: %d\n\n", totalConnection);
+
+    printf("B) Connection Details:\n\n");
+
 
     for (int i = 0; i < totalConnection; i++) {
         connection *temp = connArray[i];
@@ -209,20 +213,16 @@ int main(int argc, char *argv[])
 
         while ((packet = pcap_next(pcap, &header)) != NULL)
         {
+            payload_size = 0;
             process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
 
             if (timerisset(&temp->starting_time) == 0) {
                 temp->starting_time = header.ts;
             }
 
-            switch(tcp->th_flags) {
-                case TH_SYN:
-                    temp->syn_count++;
-                case TH_FIN:
-                    temp->fin_count++;
-                case TH_RST:
-                    temp->rst_count++;
-            }
+            if(tcp->th_flags & TH_SYN) temp->syn_count++;
+            if(tcp->th_flags & TH_FIN) temp->fin_count++;
+            if(tcp->th_flags & TH_RST) temp->rst_count++;
 
             if ((temp->syn_count >= 1) &&
                 (temp->fin_count >= 1))
@@ -240,13 +240,15 @@ int main(int argc, char *argv[])
                 temp->num_packet_dst++;
                 temp->cur_data_len_dst += payload_size;
             }
+
         }
 
-        printf("Connection: %d\n", i);
+        printf("Connection: %d\n", i+1);
         printf("Source Address: %s\n", temp->ip_src);
         printf("Destination Address: %s\n", temp->ip_dst);
         printf("Source Port: %d\n", temp->port_src);
         printf("Destination Port: %d\n", temp->port_dst);
+        printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
 
         if ((temp->syn_count >= 1) &&
             (temp->fin_count >= 1))
@@ -255,7 +257,6 @@ int main(int argc, char *argv[])
             temp->num_total_packets = temp->num_packet_src + temp->num_packet_dst;
             temp->cur_total_data_len = temp->cur_data_len_src + temp->cur_data_len_dst;
 
-            printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
             printf("Start Time: %s\n", timestamp_string(temp->starting_time));
             printf("End Time: %s\n", timestamp_string(temp->ending_time));
             printf("Duration: %s\n", timestamp_string(temp->duration));
@@ -265,11 +266,10 @@ int main(int argc, char *argv[])
             printf("Number of data bytes sent from Source to Destination: %d\n", temp->cur_data_len_src);
             printf("Number of data bytes sent from Destination to Source: %d\n", temp->cur_data_len_dst);
             printf("Total Number of data bytes: %d\n", temp->cur_total_data_len);
-            printf("END\n");
-            printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
-            printf("\n");
-
         }
+        printf("END\n");
+        printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+        printf("\n");
     }
 
 	// terminate
