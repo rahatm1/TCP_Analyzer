@@ -16,6 +16,12 @@
 #include "util.h"
 
 #define BUFFER_SIZE 80
+#define MAX_NUM_CONNECTION 1000
+
+typedef struct _round_trip {
+    int number;
+    struct timeval time;
+} round_trip;
 
 typedef struct _connection {
 	char ip_src[BUFFER_SIZE]; /* source IP */
@@ -37,6 +43,10 @@ typedef struct _connection {
     uint16_t max_win_size;  /*max window size*/
     uint16_t min_win_size;  /*min window size*/
     int sum_win_size;
+    round_trip rtt_src_arry[MAX_NUM_CONNECTION/4];
+    int rtt_src_arry_len;
+    round_trip rtt_dst_arry[MAX_NUM_CONNECTION/4];
+    int rtt_dst_arry_len;
 } connection;
 
 int totalConnection = 0;
@@ -219,7 +229,7 @@ int main(int argc, char *argv[])
     double maxDuration = 0;
     double totalDuration = 0;
 
-    uint16_t minWindow = USHRT_MAX;
+    uint16_t minWindow = UINT16_MAX;
     uint16_t maxWindow = 0;
     int totalWindow = 0;
 
@@ -230,8 +240,8 @@ int main(int argc, char *argv[])
 
         pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
+        temp->min_win_size = UINT16_MAX;
         temp->max_win_size = 0;
-        temp->min_win_size = USHRT_MAX;
         while ((packet = pcap_next(pcap, &header)) != NULL)
         {
             payload_size = 0;
@@ -243,7 +253,8 @@ int main(int argc, char *argv[])
 
             if(tcp->th_flags & TH_SYN) temp->syn_count++;
             if(tcp->th_flags & TH_FIN) temp->fin_count++;
-            if(tcp->th_flags & TH_RST) {
+            /* if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
+            if((tcp->th_flags & TH_RST) && temp->rst_count == 0) {
                 temp->rst_count++;
                 totalReset++;
             }
@@ -316,7 +327,7 @@ int main(int argc, char *argv[])
             {
                 maxWindow = temp->max_win_size;
             }
-            totalWindow += temp->sum_win_size/temp->num_total_packets;
+            totalWindow += temp->sum_win_size;
 
             printf("Start Time: %s\n", timestamp_string(temp->starting_time));
             printf("End Time: %s\n", timestamp_string(temp->ending_time));
@@ -357,7 +368,7 @@ int main(int argc, char *argv[])
     printf("Maximum number of packets including both send/received: %d\n", maxPacket);
     printf("\n");
     printf("Minimum receive window sizes including both send/received: %d\n", minWindow);
-    printf("Mean receive window sizes including both send/received: %d\n", totalWindow/completeConnection);
+    printf("Mean receive window sizes including both send/received: %d\n", totalWindow/totalPacket);
     printf("Maximum receive window sizes including both send/received: %d\n", maxWindow);
 
 	// terminate
