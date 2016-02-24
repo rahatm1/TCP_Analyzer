@@ -270,15 +270,15 @@ int main(int argc, char *argv[])
                 temp->cur_data_len_dst += payload_size;
             }
 
-            if (tcp->th_win > temp->max_win_size)
+            if (htons(tcp->th_win) > temp->max_win_size)
             {
-                temp->max_win_size = tcp->th_win;
+                temp->max_win_size = htons(tcp->th_win);
             }
-            if (tcp->th_win < temp->min_win_size)
+            if (htons(tcp->th_win) < temp->min_win_size)
             {
-                temp->min_win_size = tcp->th_win;
+                temp->min_win_size = htons(tcp->th_win);
             }
-            temp->sum_win_size += tcp->th_win;
+            temp->sum_win_size += htons(tcp->th_win);
 
         }
 
