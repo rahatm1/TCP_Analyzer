@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <net/if.h>
@@ -14,68 +13,21 @@
 #include <pcap.h>
 #include <limits.h>
 #include "util.h"
-
-#define BUFFER_SIZE 80
-#define MAX_NUM_CONNECTION 1000
-
-typedef struct _round_trip {
-    uint32_t number;
-    struct timeval time;
-} round_trip;
-
-typedef struct _connection {
-	char ip_src[BUFFER_SIZE]; /* source IP */
-	char ip_dst[BUFFER_SIZE]; /* destination IP */
-	uint16_t port_src; /* source port number */
-	uint16_t port_dst; /* destination port number */
-	int syn_count; /* flag count */
-	int fin_count;
-	int rst_count;
-	struct timeval starting_time;
-	struct timeval ending_time;
-	double duration;
-	int num_packet_src; /* number of packets sent out by source */
-	int num_packet_dst; /* number of packets sent out by destination */
-	int num_total_packets;
-	int cur_data_len_src; /* number of data bytes by source */
-	int cur_data_len_dst; /* number of data bytes by destination */
-	int cur_total_data_len;
-    uint16_t max_win_size;  /*max window size*/
-    uint16_t min_win_size;  /*min window size*/
-    int sum_win_size;
-    round_trip rtt_src_arry[MAX_NUM_CONNECTION/4];
-    int rtt_src_arry_len;
-    round_trip rtt_dst_arry[MAX_NUM_CONNECTION/4];
-    int rtt_dst_arry_len;
-} connection;
+#include "analyzer.h"
 
 int totalConnection = 0;
 
 pcap_t* build_filter(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp);
 int uniqueConnection(connection *conn, connection **connArray);
 
-/* process_TCP_packet()
- *
- * This routine parses a packet, expecting Ethernet, IP, and UDP headers.
- * It extracts the UDP source and destination port numbers along with the UDP
- * packet length by casting structs over a pointer that we move through
- * the packet.  We can do this sort of casting safely because libpcap
- * guarantees that the pointer will be aligned.
- *
- * The "ts" argument is the timestamp associated with the packet.
- *
- * Note that "capture_len" is the length of the packet *as captured by the
- * tracing program*, and thus might be less than the full length of the
- * packet.  However, the packet pointer only holds that much data, so
- * we have to be careful not to read beyond it.
- */
+
+/* Break down a TCP packet and extract relevant Information */
 void process_TCP(const unsigned char *packet, struct timeval ts,
 			unsigned int capture_len, struct ip **ip, struct tcphdr **tcp, int *payload_size)
 {
 	unsigned int IP_header_length;
 
 	/* For simplicity, we assume Ethernet encapsulation. */
-
 	if (capture_len < sizeof(struct ether_header))
 	{
 		/* We didn't even capture a full Ethernet header, so we
@@ -97,7 +49,7 @@ void process_TCP(const unsigned char *packet, struct timeval ts,
 	}
 
 	*ip = (struct ip*) packet;
-	IP_header_length = (**ip).ip_hl * 4;	/* ip_hl is in 4-byte words */
+	IP_header_length = (*ip)->ip_hl * 4;	/* ip_hl is in 4-byte words */
 
 	if (capture_len < IP_header_length)
 	{
@@ -106,7 +58,8 @@ void process_TCP(const unsigned char *packet, struct timeval ts,
 		return;
 	}
 
-	if ((**ip).ip_p != IPPROTO_TCP)
+    /* Check if it is a TCP packet */
+	if ((*ip)->ip_p != IPPROTO_TCP)
 	{
 		problem_pkt(ts, "non-TCP packet");
 		return;
@@ -124,11 +77,13 @@ void process_TCP(const unsigned char *packet, struct timeval ts,
 
 	*tcp = (struct tcphdr*) packet;
 
-    capture_len -= (**tcp).th_off * 4;
+    /* Skipping over TCP header gives the remaining payload size */
+    capture_len -= (*tcp)->th_off * 4;
     *payload_size = capture_len;
 
 }
 
+/* Check if another connection with the same 4-tuple already exists */
 int uniqueConnection(connection *conn, connection **connArray)
 {
     for (int i = 0; i < totalConnection; i++)
@@ -145,16 +100,101 @@ int uniqueConnection(connection *conn, connection **connArray)
     return 0;
 }
 
+void getConnectionInfo(connection *conn, pcap_t *pcap, int *totalReset, struct pcap_pkthdr *header)
+{
+    const unsigned char *packet;
+    struct ip *ip;
+    struct tcphdr *tcp;
+
+    conn->min_win_size = UINT16_MAX;
+    while ((packet = pcap_next(pcap, header)) != NULL)
+    {
+        int payload_size = 0;
+        process_TCP(packet, header->ts, header->caplen, &ip, &tcp, &payload_size);
+
+        if (timerisset(&conn->starting_time) == 0) conn->starting_time = header->ts;
+
+        if (tcp->th_flags & TH_SYN) conn->syn_count++;
+        if (tcp->th_flags & TH_FIN) conn->fin_count++;
+
+        //Following Announcemet doesn't match any more
+        /* FIXME: if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
+        if((tcp->th_flags & TH_RST) && conn->rst_count == 0) {
+            conn->rst_count++;
+            *totalReset = *totalReset + 1;
+
+            //FIXME: reset struct to calculate statistics for conn after reset
+            /*
+            conn->syn_count = 0;
+            conn->fin_count = 0;
+            conn->num_packet_src = 0;
+            conn->cur_data_len_src = 0;
+            conn->num_packet_dst = 0;
+            conn->cur_data_len_dst = 0;
+            conn->min_win_size = UINT16_MAX;
+            conn->max_win_size = 0;
+            conn->sum_win_size = 0;
+            */
+        }
+
+        /*From Source */
+        if (strcmp(conn->ip_src, inet_ntoa(ip->ip_src)) == 0)
+        {
+            conn->num_packet_src++;
+            conn->cur_data_len_src += payload_size;
+        }
+        /*From Destination */
+        else if (strcmp(conn->ip_dst, inet_ntoa(ip->ip_src)) == 0)
+        {
+            conn->num_packet_dst++;
+            conn->cur_data_len_dst += payload_size;
+        }
+
+        /* Get Window Sizes */
+        if (htons(tcp->th_win) > conn->max_win_size) conn->max_win_size = htons(tcp->th_win);
+        if (htons(tcp->th_win) < conn->min_win_size) conn->min_win_size = htons(tcp->th_win);
+        conn->sum_win_size += htons(tcp->th_win);
+    }
+}
+
+void printCompleteConnection(connection *conn, struct _generalStatsStruct *stats, struct pcap_pkthdr *header)
+{
+    conn->ending_time = header->ts;
+    conn->duration = getDuration(&conn->starting_time, &conn->ending_time);
+    conn->num_total_packets = conn->num_packet_src + conn->num_packet_dst;
+    conn->cur_total_data_len = conn->cur_data_len_src + conn->cur_data_len_dst;
+    /* Update Min, Max, Total Duration*/
+    if (conn->duration < stats->minDuration)   stats->minDuration = conn->duration;
+    if (conn->duration > stats->maxDuration)   stats->maxDuration = conn->duration;
+    stats->totalDuration += conn->duration;
+    /* Update Min, Max, Total Packet*/
+    if (conn->num_total_packets < stats->minPacket)    stats->minPacket = conn->num_total_packets;
+    if (conn->num_total_packets > stats->maxPacket)    stats->maxPacket = conn->num_total_packets;
+    stats->totalPacket += conn->num_total_packets;
+    /* Update Min, Max, Total Window Size*/
+    if (conn->min_win_size < stats->minWindow) stats->minWindow = conn->min_win_size;
+    if (conn->max_win_size > stats->maxWindow) stats->maxWindow = conn->max_win_size;
+    stats->totalWindow += conn->sum_win_size;
+
+    printf("Start Time: %s\n", timestamp_string(conn->starting_time));
+    printf("End Time: %s\n", timestamp_string(conn->ending_time));
+    printf("Duration: %f\n", conn->duration);
+    printf("Number of packets sent from Source to Destination: %d\n", conn->num_packet_src);
+    printf("Number of packets sent from Destination to Source: %d\n", conn->num_packet_dst);
+    printf("Total Number of packets: %d\n", conn->num_total_packets);
+    printf("Number of data bytes sent from Source to Destination: %d\n", conn->cur_data_len_src);
+    printf("Number of data bytes sent from Destination to Source: %d\n", conn->cur_data_len_dst);
+    printf("Total Number of data bytes: %d\n", conn->cur_total_data_len);
+}
 
 int main(int argc, char *argv[])
 {
 	pcap_t *pcap;
 	struct bpf_program fp;		/* The compiled filter expression */
-	char filter_exp[BUFFER_SIZE] = "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0";	/* The filter expression */
-    // char filter_exp[] = "tcp";
     const unsigned char *packet;
 	char errbuf[PCAP_ERRBUF_SIZE];
 	struct pcap_pkthdr header;
+    char filter_exp[BUFFER_SIZE] = "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0";	/* The filter expression */
 
 	/* Skip over the program name. */
 	++argv; --argc;
@@ -166,18 +206,21 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+    /* Get SYN only flags */
     pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
+    /* Count number of connections, ignore duplicates for now */
     int connNum = 0;
     while ((pcap_next(pcap, &header)) != NULL)
     {
         connNum++;
     }
+    /* Create an array to hold the connections */
     connection **connArray = (connection **) malloc(connNum * sizeof(connection *));
 
     pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
-    //Create Connection
+    /* Create each connection */
     struct ip *ip;
     struct tcphdr *tcp;
     int payload_size;
@@ -186,6 +229,7 @@ int main(int argc, char *argv[])
         payload_size = 0;
 		process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
 
+        /* Copy 4-tuple connection info to connection structure */
         connection *conn = malloc(sizeof(connection));
         memset(conn, 0, sizeof(connection));
         strncpy(conn->ip_src, inet_ntoa(ip->ip_src), BUFFER_SIZE);
@@ -193,6 +237,7 @@ int main(int argc, char *argv[])
         conn->port_src = ntohs(tcp->th_sport);
         conn->port_dst = ntohs(tcp->th_dport);
 
+        /*Add only if the connection is unique */
         if (uniqueConnection(conn, connArray) == 0)
         {
             connArray[totalConnection] = conn;
@@ -204,93 +249,23 @@ int main(int argc, char *argv[])
 
     printf("B) Connection Details:\n\n");
 
-    int completeConnection = 0;
-    int totalReset = 0;
-    int openConnection = 0;
-
-    int minPacket = INT_MAX;
-    int maxPacket = 0;
-    int totalPacket = 0;
-
-    double minDuration = LONG_MAX;
-    double maxDuration = 0;
-    double totalDuration = 0;
-
-    uint16_t minWindow = UINT16_MAX;
-    uint16_t maxWindow = 0;
-    int totalWindow = 0;
-
+    struct _generalStatsStruct stats = generalStatsDefault;
     for (int i = 0; i < totalConnection; i++) {
         connection *temp = connArray[i];
+        /*Filter by packets for this connection only using 4-tuple */
         char filter_template[] = "ip host %s and ip host %s and port %d and port %d";
         sprintf(filter_exp, filter_template, temp->ip_src, temp->ip_dst, temp->port_src, temp->port_dst);
 
         pcap = build_filter(argv[0], errbuf, &fp, filter_exp);
 
-        temp->min_win_size = UINT16_MAX;
-        temp->max_win_size = 0;
-        while ((packet = pcap_next(pcap, &header)) != NULL)
-        {
-            payload_size = 0;
-            process_TCP(packet, header.ts, header.caplen, &ip, &tcp, &payload_size);
-
-            if (timerisset(&temp->starting_time) == 0) {
-                temp->starting_time = header.ts;
-            }
-
-            if(tcp->th_flags & TH_SYN) temp->syn_count++;
-            if(tcp->th_flags & TH_FIN) temp->fin_count++;
-            
-            //Following Announcemet doesn't match any more
-            /* FIXME: if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
-            if((tcp->th_flags & TH_RST) && temp->rst_count == 0) {
-                temp->rst_count++;
-                totalReset++;
-
-                //FIXME: reset struct to calculate statistics for conn after reset
-                /*
-                temp->syn_count = 0;
-                temp->fin_count = 0;
-                temp->num_packet_src = 0;
-                temp->cur_data_len_src = 0;
-                temp->num_packet_dst = 0;
-                temp->cur_data_len_dst = 0;
-                temp->min_win_size = UINT16_MAX;
-                temp->max_win_size = 0;
-                temp->sum_win_size = 0;
-                */
-            }
-
-            /*From Source */
-            if (strcmp(temp->ip_src, inet_ntoa(ip->ip_src)) == 0)
-            {
-                temp->num_packet_src++;
-                temp->cur_data_len_src += payload_size;
-            }
-            /*From Destination */
-            else if (strcmp(temp->ip_dst, inet_ntoa(ip->ip_src)) == 0)
-            {
-                temp->num_packet_dst++;
-                temp->cur_data_len_dst += payload_size;
-            }
-
-            if (htons(tcp->th_win) > temp->max_win_size)
-            {
-                temp->max_win_size = htons(tcp->th_win);
-            }
-            if (htons(tcp->th_win) < temp->min_win_size)
-            {
-                temp->min_win_size = htons(tcp->th_win);
-            }
-            temp->sum_win_size += htons(tcp->th_win);
-
-        }
+        getConnectionInfo(temp, pcap, &stats.totalReset, &header);
 
         printf("Connection: %d\n", i+1);
         printf("Source Address: %s\n", temp->ip_src);
         printf("Destination Address: %s\n", temp->ip_dst);
         printf("Source Port: %d\n", temp->port_src);
         printf("Destination Port: %d\n", temp->port_dst);
+
         if ((temp->rst_count > 0) &&
             (temp->syn_count == 0))
         {
@@ -301,61 +276,13 @@ int main(int argc, char *argv[])
             printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
         }
 
+        if (temp->fin_count == 0)   stats.openConnection++;
+
         if ((temp->syn_count >= 1) &&
             (temp->fin_count >= 1))
         {
-            completeConnection++;
-
-            temp->ending_time = header.ts;
-            temp->duration = getDuration(&temp->starting_time, &temp->ending_time);
-            temp->num_total_packets = temp->num_packet_src + temp->num_packet_dst;
-            temp->cur_total_data_len = temp->cur_data_len_src + temp->cur_data_len_dst;
-
-            if (temp->duration < minDuration)
-            {
-                minDuration = temp->duration;
-            }
-            if (temp->duration > maxDuration)
-            {
-                maxDuration = temp->duration;
-            }
-            totalDuration += temp->duration;
-
-            if (temp->num_total_packets < minPacket)
-            {
-                minPacket = temp->num_total_packets;
-            }
-            if (temp->num_total_packets > maxPacket)
-            {
-                maxPacket = temp->num_total_packets;
-            }
-            totalPacket += temp->num_total_packets;
-
-            if (temp->min_win_size < minWindow)
-            {
-                minWindow = temp->min_win_size;
-            }
-            if (temp->max_win_size > maxWindow)
-            {
-                maxWindow = temp->max_win_size;
-            }
-            totalWindow += temp->sum_win_size;
-
-            printf("Start Time: %s\n", timestamp_string(temp->starting_time));
-            printf("End Time: %s\n", timestamp_string(temp->ending_time));
-            printf("Duration: %f\n", temp->duration);
-            printf("Number of packets sent from Source to Destination: %d\n", temp->num_packet_src);
-            printf("Number of packets sent from Destination to Source: %d\n", temp->num_packet_dst);
-            printf("Total Number of packets: %d\n", temp->num_total_packets);
-            printf("Number of data bytes sent from Source to Destination: %d\n", temp->cur_data_len_src);
-            printf("Number of data bytes sent from Destination to Source: %d\n", temp->cur_data_len_dst);
-            printf("Total Number of data bytes: %d\n", temp->cur_total_data_len);
-
-        }
-
-        if (temp->fin_count == 0)
-        {
-            openConnection++;
+            stats.completeConnection++;
+            printCompleteConnection(temp, &stats, &header);
         }
 
         printf("END\n");
@@ -365,28 +292,29 @@ int main(int argc, char *argv[])
 
     printf("C) General\n");
     printf("\n");
-    printf("Total number of complete TCP connections: %d\n", completeConnection);
-    printf("Number of reset TCP connections: %d\n", totalReset);
-    printf("Number of TCP connections that were still open when the trace capture ended: %d\n", openConnection);
+    printf("Total number of complete TCP connections: %d\n", stats.completeConnection);
+    printf("Number of reset TCP connections: %d\n", stats.totalReset);
+    printf("Number of TCP connections that were still open when the trace capture ended: %d\n", stats.openConnection);
     printf("\n");
     printf("D) Complete TCP connections: \n");
     printf("\n");
-    printf("Minimum time durations: %f\n", minDuration);
-    printf("Mean time durations: %f\n", (double) totalDuration/completeConnection);
-    printf("Maximum time durations: %f\n", maxDuration);
+    printf("Minimum time durations: %f\n", stats.minDuration);
+    printf("Mean time durations: %f\n", (double) stats.totalDuration/stats.completeConnection);
+    printf("Maximum time durations: %f\n", stats.maxDuration);
     printf("\n");
-    printf("Minimum number of packets including both send/received: %d\n", minPacket);
-    printf("Mean number of packets including both send/received: %d\n", totalPacket/completeConnection);
-    printf("Maximum number of packets including both send/received: %d\n", maxPacket);
+    printf("Minimum number of packets including both send/received: %d\n", stats.minPacket);
+    printf("Mean number of packets including both send/received: %d\n", stats.totalPacket/stats.completeConnection);
+    printf("Maximum number of packets including both send/received: %d\n", stats.maxPacket);
     printf("\n");
-    printf("Minimum receive window sizes including both send/received: %d\n", minWindow);
-    printf("Mean receive window sizes including both send/received: %d\n", totalWindow/totalPacket);
-    printf("Maximum receive window sizes including both send/received: %d\n", maxWindow);
+    printf("Minimum receive window sizes including both send/received: %d\n", stats.minWindow);
+    printf("Mean receive window sizes including both send/received: %d\n", stats.totalWindow/stats.totalPacket);
+    printf("Maximum receive window sizes including both send/received: %d\n", stats.maxWindow);
 
 	// terminate
 	return 0;
 }
 
+/* Opens file, compiles and sets filter provided by filter_exp */
 pcap_t* build_filter(char* fileName, char *errbuf, struct bpf_program *fp, char *filter_exp)
 {
     pcap_t *pcap;

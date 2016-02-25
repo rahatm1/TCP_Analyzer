@@ -1,13 +1,4 @@
-#include <stdio.h>
-#include <string.h>
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <net/if.h>
-#include <netinet/if_ether.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
 #include <pcap.h>
-#include "util.h"
 
 /* Note, this routine returns a pointer into a static buffer, and
  * so each call overwrites the value returned by the previous call.
