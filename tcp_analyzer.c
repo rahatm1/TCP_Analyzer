@@ -117,24 +117,24 @@ void getConnectionInfo(connection *conn, pcap_t *pcap, int *totalReset, struct p
         if (tcp->th_flags & TH_SYN) conn->syn_count++;
         if (tcp->th_flags & TH_FIN) conn->fin_count++;
 
-        //Following Announcemet doesn't match any more
-        /* FIXME: if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
+        /* if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
         if((tcp->th_flags & TH_RST) && conn->rst_count == 0) {
             conn->rst_count++;
             *totalReset = *totalReset + 1;
 
-            //FIXME: reset struct to calculate statistics for conn after reset
-            /*
-            conn->syn_count = 0;
-            conn->fin_count = 0;
-            conn->num_packet_src = 0;
-            conn->cur_data_len_src = 0;
-            conn->num_packet_dst = 0;
-            conn->cur_data_len_dst = 0;
-            conn->min_win_size = UINT16_MAX;
-            conn->max_win_size = 0;
-            conn->sum_win_size = 0;
-            */
+            //An incomplete connection has been reset. So, reset everything
+            if (conn->fin_count == 0)
+            {
+                conn->syn_count = 0;
+                conn->fin_count = 0;
+                conn->num_packet_src = 0;
+                conn->cur_data_len_src = 0;
+                conn->num_packet_dst = 0;
+                conn->cur_data_len_dst = 0;
+                conn->min_win_size = UINT16_MAX;
+                conn->max_win_size = 0;
+                conn->sum_win_size = 0;
+            }
         }
 
         /*From Source */
@@ -266,14 +266,24 @@ int main(int argc, char *argv[])
         printf("Source Port: %d\n", temp->port_src);
         printf("Destination Port: %d\n", temp->port_dst);
 
+        //Completed and Reset
+        char reset = ' ';
         if ((temp->rst_count > 0) &&
-            (temp->syn_count == 0))
+            (temp->syn_count > 0) &&
+            (temp->fin_count > 0))
+        {
+            reset = 'R';
+        }
+        //No control segments after reset
+        if ((temp->rst_count > 0) &&
+            (temp->syn_count == 0) &&
+            (temp->fin_count == 0))
         {
             printf("Status: R\n");
         }
         else
         {
-            printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
+            printf("Status: S%dF%d%c\n", temp->syn_count, temp->fin_count, reset);
         }
 
         if (temp->fin_count == 0)   stats.openConnection++;

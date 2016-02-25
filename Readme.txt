@@ -31,3 +31,10 @@ and data bytes statistics and prints them out.
 
 After all connections are looped through, the stats struct is printed out which
 consists of all min, max and total duration, packet etc. i.e. the General statistics.
+
+NOTE:
+According to the announcement, when a completed connection has been reset,
+it is counted as both completed and R.
+If no control segments after reset, the connection is labelled as R.
+If an incomplete connection is reset, the whole struct is reset. So, future control
+segments determine their completeness.
