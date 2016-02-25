@@ -19,7 +19,7 @@
 #define MAX_NUM_CONNECTION 1000
 
 typedef struct _round_trip {
-    int number;
+    uint32_t number;
     struct timeval time;
 } round_trip;
 
@@ -127,19 +127,6 @@ void process_TCP(const unsigned char *packet, struct timeval ts,
     capture_len -= (**tcp).th_off * 4;
     *payload_size = capture_len;
 
-	// char *src_addr = malloc(BUFFER_SIZE);
-	// strncpy(src_addr, inet_ntoa((**ip).ip_src), BUFFER_SIZE);
-    //
-	// char *dst_addr = malloc(BUFFER_SIZE);
-	// strncpy(dst_addr, inet_ntoa((**ip).ip_dst), BUFFER_SIZE);
-    //
-	// printf("%s TCP src_addr=%s src_port=%d  dst_addr=%s dst_port=%d\n",
-	// 	timestamp_string(ts),
-	// 	src_addr,
-	// 	ntohs((**tcp).th_sport),
-	// 	dst_addr,
-	// 	ntohs((**tcp).th_dport)
-	// );
 }
 
 int uniqueConnection(connection *conn, connection **connArray)
@@ -253,17 +240,34 @@ int main(int argc, char *argv[])
 
             if(tcp->th_flags & TH_SYN) temp->syn_count++;
             if(tcp->th_flags & TH_FIN) temp->fin_count++;
-            /* if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
+            
+            //Following Announcemet doesn't match any more
+            /* FIXME: if the same TCP connection was reset multiple times, it should be counted as ONE reset TCP connection.*/
             if((tcp->th_flags & TH_RST) && temp->rst_count == 0) {
                 temp->rst_count++;
                 totalReset++;
+
+                //FIXME: reset struct to calculate statistics for conn after reset
+                /*
+                temp->syn_count = 0;
+                temp->fin_count = 0;
+                temp->num_packet_src = 0;
+                temp->cur_data_len_src = 0;
+                temp->num_packet_dst = 0;
+                temp->cur_data_len_dst = 0;
+                temp->min_win_size = UINT16_MAX;
+                temp->max_win_size = 0;
+                temp->sum_win_size = 0;
+                */
             }
 
+            /*From Source */
             if (strcmp(temp->ip_src, inet_ntoa(ip->ip_src)) == 0)
             {
                 temp->num_packet_src++;
                 temp->cur_data_len_src += payload_size;
             }
+            /*From Destination */
             else if (strcmp(temp->ip_dst, inet_ntoa(ip->ip_src)) == 0)
             {
                 temp->num_packet_dst++;
@@ -287,7 +291,15 @@ int main(int argc, char *argv[])
         printf("Destination Address: %s\n", temp->ip_dst);
         printf("Source Port: %d\n", temp->port_src);
         printf("Destination Port: %d\n", temp->port_dst);
-        printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
+        if ((temp->rst_count > 0) &&
+            (temp->syn_count == 0))
+        {
+            printf("Status: R\n");
+        }
+        else
+        {
+            printf("Status: S%dF%d\n", temp->syn_count, temp->fin_count);
+        }
 
         if ((temp->syn_count >= 1) &&
             (temp->fin_count >= 1))
