@@ -29,10 +29,10 @@ typedef struct _connection {
     uint16_t max_win_size;  /*max window size*/
     uint16_t min_win_size;  /*min window size*/
     int sum_win_size;
-    round_trip rtt_src_arry[MAX_NUM_CONNECTION/4];
-    int rtt_src_arry_len;
-    round_trip rtt_dst_arry[MAX_NUM_CONNECTION/4];
-    int rtt_dst_arry_len;
+    round_trip expected_ack[MAX_NUM_CONNECTION/4];
+    int expected_ack_len;
+    round_trip actual_ack[MAX_NUM_CONNECTION/4];
+    int actual_ack_len;
 } connection;
 
 struct _generalStatsStruct {
@@ -51,6 +51,10 @@ struct _generalStatsStruct {
     uint16_t minWindow;
     uint16_t maxWindow;
     uint32_t totalWindow;
+
+    double minRTT;
+    double maxRTT;
+    double totalRTT;
 };
 
 const struct _generalStatsStruct generalStatsDefault = {
@@ -64,6 +68,9 @@ const struct _generalStatsStruct generalStatsDefault = {
     0,
     0,
     UINT16_MAX,
+    0,
+    0,
+    LONG_MAX,
     0,
     0
 };

@@ -154,6 +154,42 @@ void getConnectionInfo(connection *conn, pcap_t *pcap, int *totalReset, struct p
         if (htons(tcp->th_win) > conn->max_win_size) conn->max_win_size = htons(tcp->th_win);
         if (htons(tcp->th_win) < conn->min_win_size) conn->min_win_size = htons(tcp->th_win);
         conn->sum_win_size += htons(tcp->th_win);
+
+        //Connection Establishment SYN/ACK packets
+        if (conn->expected_ack_len < 2)
+        {
+            conn->expected_ack[conn->expected_ack_len].number = ntohl(tcp->th_seq) + 1;
+        }
+        else if (tcp->th_flags & TH_ACK)
+        {
+            conn->expected_ack[conn->expected_ack_len].number = ntohl(tcp->th_seq) + payload_size;
+        }
+        conn->expected_ack[conn->expected_ack_len].time = header->ts;
+        conn->expected_ack_len++;
+
+        conn->actual_ack[conn->actual_ack_len].number = ntohl(tcp->th_ack);
+        conn->actual_ack[conn->actual_ack_len].time = header->ts;
+        conn->actual_ack_len++;
+    }
+}
+
+void computeRTT(connection *conn, struct _generalStatsStruct *stats)
+{
+    double rtt;
+
+    for (int i = 0; i < conn->expected_ack_len; i++) {
+
+        for (int j = 0; j < conn->actual_ack_len; j++) {
+            rtt = getDuration(&conn->expected_ack[i].time, &conn->actual_ack[j].time);
+
+            if ((conn->expected_ack[i].number == conn->actual_ack[j].number) &&
+                (rtt>0))
+            {
+                if (rtt < stats->minRTT) stats->minRTT = rtt;
+                if (rtt > stats->maxRTT) stats->maxRTT = rtt;
+                stats->totalRTT += rtt;
+            }
+        }
     }
 }
 
@@ -293,6 +329,7 @@ int main(int argc, char *argv[])
         {
             stats.completeConnection++;
             printCompleteConnection(temp, &stats, &header);
+            computeRTT(temp, &stats);
         }
 
         printf("END\n");
@@ -311,6 +348,10 @@ int main(int argc, char *argv[])
     printf("Minimum time durations: %f\n", stats.minDuration);
     printf("Mean time durations: %f\n", (double) stats.totalDuration/stats.completeConnection);
     printf("Maximum time durations: %f\n", stats.maxDuration);
+    printf("\n");
+    printf("Minimum RTT values including both send/received: %f\n", stats.minRTT);
+    printf("Mean RTT values including both send/received: %f\n", stats.totalRTT/stats.totalPacket);
+    printf("Maximum RTT values including both send/received: %f\n", stats.maxRTT);
     printf("\n");
     printf("Minimum number of packets including both send/received: %d\n", stats.minPacket);
     printf("Mean number of packets including both send/received: %d\n", stats.totalPacket/stats.completeConnection);
