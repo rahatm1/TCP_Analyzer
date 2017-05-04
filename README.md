@@ -1,9 +1,13 @@
 Build with:
+```sh
     make
+```
 Run with:
+```sh
     ./tcp_analyzer capfile
+```
 
-Program Architecture:
+# Program Architecture:
 The program starts by opening the given pcap file and applying a filter,
 that allows SYN only packets. Then, the number of connections are calculated.
 A connection struct resides in "analyzer.h" that holds all the relevant information about
@@ -32,7 +36,7 @@ and data bytes statistics and prints them out.
 After all connections are looped through, the stats struct is printed out which
 consists of all min, max and total duration, packet etc. i.e. the General statistics.
 
-NOTE:
+**NOTE:**
 According to the announcement, when a completed connection has been reset,
 it is counted as both completed and R.
 If no control segments after reset, the connection is labelled as R.
